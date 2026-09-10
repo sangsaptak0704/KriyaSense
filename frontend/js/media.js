@@ -1,56 +1,64 @@
 /* ==========================================================================
    media.js
-   Owns the single global media source (idle / uploaded image / uploaded
-   video / live camera) and keeps every registered vision panel's <video>
-   and <img> elements in sync with it. This is the ONLY module that touches
-   URL.createObjectURL()/getUserMedia() lifecycle; detection/tracking/
-   overlay never care where the pixels came from, only whether a source is
-   active.
+   Multi-channel media management architecture. Supports completely isolated
+   media channels (e.g. 'live' for Dashboard / Live Analysis / Streaming,
+   and 'exp' for Experiment Mode). Each channel independently owns its
+   lifecycle (file upload, live camera, play/pause, clear) and keeps its
+   registered panels in sync without cross-channel leakage or conflict.
    ========================================================================== */
 
-const ASTRA_MEDIA = (() => {
-
-  const panels = []; // { video, img }
-  let currentType = 'none'; // 'none' | 'image' | 'video' | 'camera'
-  let currentUrl = null;
-  let currentStream = null;
-  let currentLabel = '';
-  const subscribers = [];
-
-  function notify() {
-    const s = getState();
-    subscribers.forEach(fn => fn(s));
+class MediaChannel {
+  constructor(id, label) {
+    this.id = id;
+    this.label = label || id;
+    this.panels = []; // { video, img, canvas }
+    this.currentType = 'none'; // 'none' | 'image' | 'video' | 'camera'
+    this.currentUrl = null;
+    this.currentStream = null;
+    this.currentLabel = '';
+    this.subscribers = [];
   }
 
-  function subscribe(fn) { subscribers.push(fn); }
-
-  function getState() {
-    return { type: currentType, label: currentLabel };
+  notify() {
+    const s = this.getState();
+    this.subscribers.forEach(fn => {
+      try { fn(s); } catch (e) { console.error('MediaChannel subscriber error:', e); }
+    });
   }
 
-  function applyToPanel(panel) {
+  subscribe(fn) {
+    this.subscribers.push(fn);
+  }
+
+  getState() {
+    return { channel: this.id, type: this.currentType, label: this.currentLabel };
+  }
+
+  applyToPanel(panel) {
     const { video, img } = panel;
-    if (currentType === 'camera') {
+    if (!video || !img) return;
+
+    if (this.currentType === 'camera') {
       video.pause();
       video.removeAttribute('src');
-      video.srcObject = currentStream;
+      video.srcObject = this.currentStream;
       video.muted = true;
       video.hidden = false;
       img.hidden = true;
       video.play().catch(() => {});
-    } else if (currentType === 'video') {
+    } else if (this.currentType === 'video') {
       video.srcObject = null;
-      video.src = currentUrl;
+      video.src = this.currentUrl;
       video.loop = true;
       video.muted = true;
       video.hidden = false;
       img.hidden = true;
       video.play().catch(() => {});
-    } else if (currentType === 'image') {
+    } else if (this.currentType === 'image') {
       video.pause();
       video.srcObject = null;
       video.removeAttribute('src');
-      img.src = currentUrl;
+      img.src = this.currentUrl;
       video.hidden = true;
       img.hidden = false;
     } else {
@@ -63,65 +71,134 @@ const ASTRA_MEDIA = (() => {
     }
   }
 
-  function applyToAllPanels() {
-    panels.forEach(applyToPanel);
+  applyToAllPanels() {
+    this.panels.forEach(p => this.applyToPanel(p));
   }
 
-  function registerPanel(panel) {
-    panels.push(panel);
-    applyToPanel(panel);
+  registerPanel(panel) {
+    this.panels.push(panel);
+    this.applyToPanel(panel);
   }
 
-  function clearPrevious() {
-    if (currentUrl) {
-      URL.revokeObjectURL(currentUrl);
-      currentUrl = null;
+  clearPrevious() {
+    if (this.currentUrl) {
+      URL.revokeObjectURL(this.currentUrl);
+      this.currentUrl = null;
     }
-    if (currentStream) {
-      ASTRA_CAMERA.stopActiveStream();
-      currentStream = null;
+    if (this.currentStream) {
+      ASTRA_CAMERA.stopStreamForChannel(this.id);
+      this.currentStream = null;
     }
   }
 
-  async function startCamera(deviceId) {
-    clearPrevious();
-    const res = await ASTRA_CAMERA.startLiveCamera(deviceId);
+  async startCamera(deviceId) {
+    this.clearPrevious();
+    const res = await ASTRA_CAMERA.startLiveCamera(deviceId, this.id);
     if (!res.ok) {
-      currentType = 'none';
-      currentLabel = '';
-      applyToAllPanels();
-      notify();
+      this.currentType = 'none';
+      this.currentLabel = '';
+      this.applyToAllPanels();
+      this.notify();
       return res;
     }
-    currentStream = res.stream;
-    currentType = 'camera';
-    currentLabel = res.deviceLabel || 'Live Camera';
-    applyToAllPanels();
-    notify();
+    this.currentStream = res.stream;
+    this.currentType = 'camera';
+    this.currentLabel = res.deviceLabel || 'Live Camera';
+    this.applyToAllPanels();
+    this.notify();
     return res;
   }
 
-  function loadFile(file) {
-    clearPrevious();
+  loadFile(file) {
+    this.clearPrevious();
     const url = URL.createObjectURL(file);
-    currentUrl = url;
-    currentType = file.type.startsWith('image/') ? 'image' : 'video';
-    currentLabel = file.name;
-    applyToAllPanels();
-    notify();
-    return { ok: true, type: currentType, name: file.name };
+    this.currentUrl = url;
+    this.currentType = file.type.startsWith('image/') ? 'image' : 'video';
+    this.currentLabel = file.name;
+    this.applyToAllPanels();
+    this.notify();
+    return { ok: true, type: this.currentType, name: file.name };
   }
 
-  function stop() {
-    clearPrevious();
-    currentType = 'none';
-    currentLabel = '';
-    applyToAllPanels();
-    notify();
+  stop() {
+    this.clearPrevious();
+    this.currentType = 'none';
+    this.currentLabel = '';
+    this.applyToAllPanels();
+    this.notify();
   }
 
-  function isActive() { return currentType !== 'none'; }
-  function getType() { return currentType; }
+  isPaused() {
+    const v = this.getVideoElement();
+    return v ? v.paused : true;
+  }
 
-  return { registerPanel, startCamera, loadFile, stop, isActive, getType, getState, subscribe };
+  play() {
+    this.panels.forEach(p => {
+      if (p.video && !p.video.hidden) p.video.play().catch(() => {});
+    });
+  }
+
+  pause() {
+    this.panels.forEach(p => {
+      if (p.video && !p.video.hidden) p.video.pause();
+    });
+  }
+
+  togglePlay() {
+    if (this.isPaused()) {
+      this.play();
+      return true;
+    } else {
+      this.pause();
+      return false;
+    }
+  }
+
+  isActive() { return this.currentType !== 'none'; }
+  getType() { return this.currentType; }
+
+  getVideoElement() {
+    for (const p of this.panels) {
+      if (p.video && !p.video.hidden) return p.video;
+    }
+    return this.panels[0] ? this.panels[0].video : null;
+  }
+
+  getImageElement() {
+    for (const p of this.panels) {
+      if (p.img && !p.img.hidden) return p.img;
+    }
+    return this.panels[0] ? this.panels[0].img : null;
+  }
+}
+
+const ASTRA_MEDIA = (() => {
+  const channels = {
+    live: new MediaChannel('live', 'Live Vision'),
+    exp: new MediaChannel('exp', 'Experiment Mode'),
+  };
+
+  function getChannel(id) {
+    if (!channels[id]) {
+      channels[id] = new MediaChannel(id, id);
+    }
+    return channels[id];
+  }
+
+  return {
+    getChannel,
+    get live() { return channels.live; },
+    get exp() { return channels.exp; },
+
+    // Backward-compatible delegating methods defaulting to 'live'
+    registerPanel: (panel, ch = 'live') => getChannel(ch).registerPanel(panel),
+    startCamera: (deviceId, ch = 'live') => getChannel(ch).startCamera(deviceId),
+    loadFile: (file, ch = 'live') => getChannel(ch).loadFile(file),
+    stop: (ch = 'live') => getChannel(ch).stop(),
+    isActive: (ch = 'live') => getChannel(ch).isActive(),
+    getType: (ch = 'live') => getChannel(ch).getType(),
+    getState: (ch = 'live') => getChannel(ch).getState(),
+    subscribe: (fn, ch = 'live') => getChannel(ch).subscribe(fn),
+  };
 })();

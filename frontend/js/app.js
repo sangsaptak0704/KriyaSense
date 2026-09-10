@@ -48,6 +48,8 @@
 
   const state = {
     activePage: 'dashboard',
+    liveFrame: { persons: [], objects: [], channel: 'live' },
+    expFrame: { persons: [], objects: [], channel: 'exp' },
     latestFrame: { persons: [], objects: [] },
     animStart: performance.now(),
     lastViolationRef: null,
@@ -245,24 +247,34 @@
     const har = ASTRA_API.getDetectionMode() === 'REAL' && ASTRA_API.isRealDetectionReady();
     el.innerHTML = kvHtml([
       { k: 'Model', v: har ? 'MediaPipe Pose Landmarker' : 'Simulated' },
-      { k: 'Keypoints', v: har ? '33 (2D + 3D world)' : '—' },
+      { k: 'Keypoints', v: har ? '33 (2D + 3D metric world)' : '—' },
       { k: 'Confidence', v: conf != null ? `${conf.toFixed(1)}%` : '—', cls: 'green' },
       { k: 'Tracking', v: primary ? 'ACTIVE' : 'IDLE', cls: primary ? 'cyan' : '' },
-      { k: 'HAR', v: har ? 'Geometry + temporal' : 'Scripted', cls: har ? 'green' : 'orange' },
-      { k: 'Orientation', v: 'ARBITRARY', cls: 'orange' },
+      { k: 'HAR Pipeline', v: har ? 'Body-Centric Kinematics' : 'Scripted', cls: har ? 'green' : 'orange' },
+      { k: 'Orientation Invariance', v: 'ACTIVE (0-G Validated)', cls: 'green' },
     ]);
   }
 
-  function renderHmrPanel() {
+  function renderHmrPanel(primary) {
     const el = $('#hmrInfoList');
     if (!el) return;
-    el.innerHTML = kvHtml([
-      { k: 'Module', v: '3D Human Mesh Recovery' },
-      { k: 'Status', v: 'OPTIONAL MODULE', cls: 'orange' },
-      { k: 'Body Reference', v: 'PAYLOAD RACK' },
-      { k: 'Gravity Reference', v: 'NOT REQUIRED' },
-      { k: 'Orientation', v: 'ARBITRARY', cls: 'cyan' },
-    ]);
+    const bt = primary && primary.bodyTelemetry;
+    if (bt) {
+      el.innerHTML = kvHtml([
+        { k: 'Coordinate Basis', v: bt.frameType || 'BODY-CENTRIC (3D)', cls: 'cyan' },
+        { k: 'Rack Pitch / Roll', v: `${bt.rackPitchDeg >= 0 ? '+' : ''}${bt.rackPitchDeg}° / ${bt.rackRollDeg >= 0 ? '+' : ''}${bt.rackRollDeg}°`, cls: 'cyan' },
+        { k: 'Knee / Hip Ext', v: `${bt.kneeExtDeg}° / ${bt.hipExtDeg}°`, cls: bt.kneeExtDeg >= 135 ? 'green' : 'orange' },
+        { k: 'Gait Cadence', v: bt.cadenceHz > 0 ? `${bt.cadenceHz} Hz (${bt.cadenceHz > 1.8 ? 'RAPID' : 'LOCOMOTION'})` : 'STABLE (0.0 Hz)', cls: bt.cadenceHz > 0 ? 'cyan' : 'green' },
+        { k: 'Gravity Reference', v: 'INDEPENDENT (0-G)', cls: 'green' },
+      ]);
+    } else {
+      el.innerHTML = kvHtml([
+        { k: 'Coordinate Basis', v: 'BODY-CENTRIC (3D)', cls: 'cyan' },
+        { k: 'Payload Rack', v: 'FIXED REFERENCE' },
+        { k: 'Gravity Reference', v: 'NOT REQUIRED' },
+        { k: 'Orientation Mode', v: 'ARBITRARY (0-G)', cls: 'cyan' },
+      ]);
+    }
   }
 
   /* ------------------------------- OBJECT TABLE ------------------------------- */
@@ -282,45 +294,71 @@
   /* ------------------------------- DETECTION TICK (drives all AI-derived UI) ------------------------------- */
 
   function onDetectionFrame(frame) {
-    state.latestFrame = frame;
-    ASTRA_ACTIVITY.update(frame.persons || []);
+    if (!frame) return;
+    if (frame.channel === 'live') {
+      state.liveFrame = frame;
+      state.latestFrame = frame;
+      ASTRA_ACTIVITY.update(frame.persons || []);
 
-    const allPersons = ASTRA_ACTIVITY.getAll();
-    const primary = allPersons[0] || null;
+      const allPersons = ASTRA_ACTIVITY.getAll();
+      const primary = allPersons[0] || null;
 
-    updateDashboardHero(primary);
-    renderDashExperimentMini(ASTRA_EXPERIMENT.getStatus());
-    renderPersonListInto('personListLive', allPersons);
-    renderObjectTable(frame.objects || []);
-    renderHoiPanel(primary);
-    renderPosePanel(primary);
-    renderGeneralActivityPage(allPersons);
+      updateDashboardHero(primary);
+      renderDashExperimentMini(ASTRA_EXPERIMENT.getStatus());
+      renderPersonListInto('personListLive', allPersons);
+      renderObjectTable(frame.objects || []);
+      renderHoiPanel(primary);
+      renderPosePanel(primary);
+      renderHmrPanel(primary);
+      renderGeneralActivityPage(allPersons);
+    } else if (frame.channel === 'exp') {
+      state.expFrame = frame;
+      const primary = (frame.persons && frame.persons[0]) || null;
+
+      // Live AI Sequence Validation strictly operates on Experiment Mode media!
+      if (primary && ASTRA_MEDIA.exp.isActive()) {
+        ASTRA_EXPERIMENT.processLiveDetection(primary);
+      }
+      renderStepList(ASTRA_EXPERIMENT.getStatus());
+      renderFsmDiagram(ASTRA_EXPERIMENT.getStatus());
+      renderValidatorCard(ASTRA_EXPERIMENT.getStatus());
+    }
   }
 
   /* ------------------------------- VISION CANVAS REDRAW LOOP ------------------------------- */
 
-  const CANVAS_IDS = ['overlayCanvasDash', 'overlayCanvasLive', 'overlayCanvasStream'];
-
   function visionLoop() {
-    const idle = ASTRA_MEDIA.getType() === 'none';
-    const loadingReal = !idle && ASTRA_API.getDetectionMode() === 'REAL' && !ASTRA_API.isRealDetectionReady();
-    CANVAS_IDS.forEach(id => {
+    const liveActive = ASTRA_MEDIA.live.isActive();
+    const liveLoading = liveActive && ASTRA_API.getDetectionMode() === 'REAL' && !ASTRA_API.isRealDetectionReady();
+
+    const expActive = ASTRA_MEDIA.exp.isActive();
+    const expLoading = expActive && ASTRA_API.getDetectionMode() === 'REAL' && !ASTRA_API.isRealDetectionReady();
+
+    // Render live canvases (Dashboard, Live Analysis, Video Streaming)
+    ['overlayCanvasDash', 'overlayCanvasLive', 'overlayCanvasStream'].forEach(id => {
       const canvas = document.getElementById(id);
       if (!canvas) return;
       try {
-        if (idle) ASTRA_OVERLAY.drawPlaceholder(canvas, 'NO ACTIVE FEED — Upload an image/video or start Live Camera');
-        else if (loadingReal) ASTRA_OVERLAY.drawPlaceholder(canvas, 'LOADING REAL AI MODEL — one-time, then fully offline');
-        else ASTRA_OVERLAY.render(canvas, state.latestFrame);
+        if (!liveActive) ASTRA_OVERLAY.drawPlaceholder(canvas, 'NO ACTIVE FEED — Upload an image/video or start Live Camera');
+        else if (liveLoading) ASTRA_OVERLAY.drawPlaceholder(canvas, 'LOADING REAL AI MODEL — one-time, then fully offline');
+        else ASTRA_OVERLAY.render(canvas, state.liveFrame);
       } catch (err) {
-        // A single bad frame must never permanently freeze the overlay —
-        // without this, an uncaught error here stops requestAnimationFrame
-        // from ever being rescheduled below, silently killing every canvas
-        // for the rest of the session while the (separately-driven)
-        // Detected Persons panel keeps updating, producing exactly the
-        // "overlay stuck showing an old/wrong count" symptom this guards.
         console.error('visionLoop render failed for', id, err);
       }
     });
+
+    // Render experiment canvas (strictly isolated from live feed!)
+    const expCanvas = document.getElementById('overlayCanvasExp');
+    if (expCanvas) {
+      try {
+        if (!expActive) ASTRA_OVERLAY.drawPlaceholder(expCanvas, 'NO ACTIVE FEED — Upload an image/video or start Live Camera');
+        else if (expLoading) ASTRA_OVERLAY.drawPlaceholder(expCanvas, 'LOADING REAL AI MODEL — one-time, then fully offline');
+        else ASTRA_OVERLAY.render(expCanvas, state.expFrame);
+      } catch (err) {
+        console.error('visionLoop render failed for overlayCanvasExp', err);
+      }
+    }
+
     requestAnimationFrame(visionLoop);
   }
 
@@ -341,9 +379,11 @@
   function refreshAllDeviceSelects() {
     populateDeviceSelect($('#cameraDeviceSelect'));
     populateDeviceSelect($('#cameraDeviceSelect2'));
+    populateDeviceSelect($('#cameraDeviceSelectExp'));
   }
 
-  function wireMediaControls({ uploadId, cameraBtnId, deviceSelectId, playBtnId, clearBtnId }) {
+  function wireMediaControls({ uploadId, cameraBtnId, deviceSelectId, playBtnId, clearBtnId, channel = 'live' }) {
+    const mediaChan = ASTRA_MEDIA.getChannel(channel);
     const uploadInput = uploadId ? document.getElementById(uploadId) : null;
     const cameraBtn = cameraBtnId ? document.getElementById(cameraBtnId) : null;
     const deviceSelect = deviceSelectId ? document.getElementById(deviceSelectId) : null;
@@ -355,27 +395,40 @@
     if (uploadInput) uploadInput.addEventListener('change', (e) => {
       const file = e.target.files[0];
       if (!file) return;
-      ASTRA_MEDIA.loadFile(file);
+      mediaChan.loadFile(file);
       e.target.value = '';
+      if (playBtn) {
+        playBtn.innerHTML = '<i data-lucide="pause"></i> Pause';
+        if (window.lucide) window.lucide.createIcons();
+      }
     });
 
     if (cameraBtn) cameraBtn.addEventListener('click', async () => {
       if (!ASTRA_CAMERA.isCameraSupported()) return;
       const deviceId = deviceSelect ? deviceSelect.value || undefined : undefined;
-      await ASTRA_MEDIA.startCamera(deviceId);
+      await mediaChan.startCamera(deviceId);
       refreshAllDeviceSelects();
+      if (playBtn) {
+        playBtn.innerHTML = '<i data-lucide="pause"></i> Pause';
+        if (window.lucide) window.lucide.createIcons();
+      }
     });
 
-    if (clearBtn) clearBtn.addEventListener('click', () => ASTRA_MEDIA.stop());
+    if (clearBtn) clearBtn.addEventListener('click', () => {
+      mediaChan.stop();
+      if (playBtn) {
+        playBtn.innerHTML = '<i data-lucide="play"></i> Play';
+        if (window.lucide) window.lucide.createIcons();
+      }
+    });
 
     if (playBtn) playBtn.addEventListener('click', () => {
-      const video = $('#videoFeedLive');
-      if (!video) return;
-      if (video.paused) {
-        video.play().catch(() => {});
+      const isPaused = mediaChan.isPaused();
+      if (isPaused) {
+        mediaChan.play();
         playBtn.innerHTML = '<i data-lucide="pause"></i> Pause';
       } else {
-        video.pause();
+        mediaChan.pause();
         playBtn.innerHTML = '<i data-lucide="play"></i> Play';
       }
       if (window.lucide) window.lucide.createIcons();
@@ -403,7 +456,7 @@
 
   function updateModeUI() {
     const badge = detectionModeBadge();
-    ['dashModeTag', 'modeTagLive', 'streamModeTag'].forEach(id => {
+    ['dashModeTag', 'modeTagLive', 'streamModeTag', 'modeTagExp'].forEach(id => {
       const el = $(`#${id}`);
       if (!el) return;
       el.textContent = badge.text;
@@ -418,21 +471,22 @@
     if (topbarPill) topbarPill.className = `status-pill status-pill-mode ${badge.pillCls}`;
 
     const mode = ASTRA_API.getDetectionMode();
-    $all('#detectionModeToggle .mode-btn').forEach(btn => {
+    $all('.mode-toggle .mode-btn').forEach(btn => {
       btn.classList.toggle('active', btn.dataset.mode === mode);
       btn.classList.toggle('loading', mode === 'REAL' && btn.dataset.mode === 'REAL' && !ASTRA_API.isRealDetectionReady());
     });
 
-    const hint = $('#detectionModeHint');
-    if (hint) {
-      hint.textContent = mode === 'REAL'
-        ? 'Real on-device detection (person + pose + generic objects, COCO classes only) — runs fully offline, no footage leaves this device.'
-        : 'Simulated mode acts out the full BAS pick-up → open-cap → draw-liquid → pour-liquid → mix → place-back sequence for demoing the FSM — independent of what the camera actually sees.';
-    }
+    const hintText = mode === 'REAL'
+      ? 'Real on-device detection (person + pose + generic objects, COCO classes only) — runs fully offline, no footage leaves this device.'
+      : 'Simulated mode acts out the full BAS pick-up → open-cap → draw-liquid → pour-liquid → mix → place-back sequence for demoing the FSM — independent of what the camera actually sees.';
+    ['detectionModeHint', 'detectionModeHintExp'].forEach(id => {
+      const hint = $(`#${id}`);
+      if (hint) hint.textContent = hintText;
+    });
   }
 
   function initDetectionModeToggle() {
-    $all('#detectionModeToggle .mode-btn').forEach(btn => {
+    $all('.mode-toggle .mode-btn').forEach(btn => {
       btn.addEventListener('click', () => ASTRA_API.setDetectionMode(btn.dataset.mode));
     });
     ASTRA_API.onModeChange(() => {
@@ -443,21 +497,44 @@
   }
 
   function initMediaPanels() {
-    ASTRA_MEDIA.registerPanel({ video: $('#videoFeedDash'), img: $('#imgFeedDash') });
-    ASTRA_MEDIA.registerPanel({ video: $('#videoFeedLive'), img: $('#imgFeedLive') });
-    ASTRA_MEDIA.registerPanel({ video: $('#videoFeedStream'), img: $('#imgFeedStream') });
+    // Register live panels
+    ASTRA_MEDIA.live.registerPanel({ video: $('#videoFeedDash'), img: $('#imgFeedDash') });
+    ASTRA_MEDIA.live.registerPanel({ video: $('#videoFeedLive'), img: $('#imgFeedLive') });
+    ASTRA_MEDIA.live.registerPanel({ video: $('#videoFeedStream'), img: $('#imgFeedStream') });
 
-    ASTRA_MEDIA.subscribe((mstate) => {
+    // Register experiment panel (strictly isolated from live feed!)
+    ASTRA_MEDIA.exp.registerPanel({ video: $('#videoFeedExp'), img: $('#imgFeedExp') });
+
+    ASTRA_MEDIA.live.subscribe((mstate) => {
       const label = sourceLabelFor(mstate);
-      ['dashSourceTag', 'videoSourceTag'].forEach(id => { const el = $(`#${id}`); if (el) el.textContent = label; });
+      ['dashSourceTag', 'videoSourceTag'].forEach(id => {
+        const el = $(`#${id}`);
+        if (el) el.textContent = label;
+      });
+    });
+
+    ASTRA_MEDIA.exp.subscribe((mstate) => {
+      const label = sourceLabelFor(mstate);
+      const el = $('#expSourceTag');
+      if (el) el.textContent = label;
+      if (mstate.type === 'none') {
+        ASTRA_EXPERIMENT.resetLiveTracking();
+        renderStepList(ASTRA_EXPERIMENT.getStatus());
+        renderValidatorCard(ASTRA_EXPERIMENT.getStatus());
+      }
     });
 
     wireMediaControls({
       uploadId: 'videoUploadInput', cameraBtnId: 'startCameraBtn', deviceSelectId: 'cameraDeviceSelect',
-      playBtnId: 'playPauseBtn', clearBtnId: 'clearFeedBtn',
+      playBtnId: 'playPauseBtn', clearBtnId: 'clearFeedBtn', channel: 'live',
     });
     wireMediaControls({
       uploadId: 'videoUploadInput2', cameraBtnId: 'startCameraBtn2', deviceSelectId: 'cameraDeviceSelect2',
+      channel: 'live',
+    });
+    wireMediaControls({
+      uploadId: 'videoUploadInputExp', cameraBtnId: 'startCameraBtnExp', deviceSelectId: 'cameraDeviceSelectExp',
+      playBtnId: 'playPauseBtnExp', clearBtnId: 'clearFeedBtnExp', channel: 'exp',
     });
 
     if (navigator.mediaDevices && navigator.mediaDevices.addEventListener) {
@@ -501,16 +578,51 @@
         ${status.sequence.map((s, i) => {
           const isDone = i < status.currentIndex;
           const isCurrent = i === status.currentIndex && !status.completed;
-          const cls = isDone ? 'done' : isCurrent ? 'current' : '';
-          const icon = isDone ? '✓' : isCurrent ? '●' : '○';
+          const isViolated = isCurrent && status.status === 'INVALID';
+          const cls = isViolated ? 'violation' : isDone ? 'done' : isCurrent ? 'current' : '';
+          const icon = isViolated ? '⚠' : isDone ? '✓' : isCurrent ? '●' : '○';
           return `<div class="step-item ${cls}">
             <div class="step-icon">${icon}</div>
             <div class="step-label">${String(i + 1).padStart(2, '0')} ${s.label}</div>
+            ${isViolated ? '<span class="tag tag-mode-sim" style="margin-left:auto;font-size:9.5px;padding:2px 6px;">VIOLATION</span>' : ''}
+            ${isDone ? '<span class="tag tag-green" style="margin-left:auto;font-size:9.5px;padding:2px 6px;">DONE</span>' : ''}
+            ${isCurrent && !isViolated ? '<span class="tag tag-cyan" style="margin-left:auto;font-size:9.5px;padding:2px 6px;">ACTIVE</span>' : ''}
           </div>`;
         }).join('')}
       </div>`;
     $('#stepCurrent').textContent = status.completed ? status.totalSteps : status.currentStepNumber;
     $('#stepTotal').textContent = status.totalSteps;
+
+    const badge = $('#expValidationBadge');
+    if (badge) {
+      if (status.status === 'INVALID') {
+        badge.className = 'tag tag-mode-sim pulse';
+        badge.textContent = '⚠ VIOLATION DETECTED';
+      } else if (status.completed) {
+        badge.className = 'tag tag-green';
+        badge.textContent = '✓ SEQUENCE COMPLETE';
+      } else if (ASTRA_MEDIA.exp.isActive()) {
+        badge.className = 'tag tag-green';
+        badge.textContent = '● LIVE AI MONITORING';
+      } else {
+        badge.className = 'tag tag-cyan';
+        badge.textContent = 'IDLE';
+      }
+    }
+
+    const feedback = $('#stepLiveFeedback');
+    if (feedback) {
+      if (status.status === 'INVALID' && status.lastViolation) {
+        feedback.innerHTML = `<span style="color:var(--status-critical); font-weight:700;">⚠ VIOLATION: Expected ${status.lastViolation.expected}, detected ${status.lastViolation.detected}</span>`;
+      } else if (status.completed) {
+        feedback.innerHTML = '<span style="color:var(--status-nominal); font-weight:700;">✓ Protocol completed successfully</span>';
+      } else if (status.currentDetectedActivity) {
+        const confStr = status.currentConfidence ? ` (${status.currentConfidence.toFixed(0)}%)` : '';
+        feedback.innerHTML = `LIVE DETECTED: <b style="color:var(--accent-signal);">${status.currentDetectedActivity}</b>${confStr}`;
+      } else {
+        feedback.innerHTML = 'Awaiting live feed or camera activity...';
+      }
+    }
   }
 
   function renderFsmDiagram(status) {
@@ -569,19 +681,58 @@
     }
   }
 
-  function renderSimButtons(status) {
-    const grid = $('#simBtnGrid');
-    if (!grid) return;
-    const seen = new Set();
-    const uniqueSteps = status.sequence.filter(s => (seen.has(s.code) ? false : seen.add(s.code)));
-    grid.innerHTML = uniqueSteps.map(s => {
-      const idx = status.sequence.findIndex(x => x.code === s.code);
-      const done = idx < status.currentIndex;
-      return `<button class="sim-btn ${done ? 'done' : ''}" data-code="${s.code}">${s.label}</button>`;
-    }).join('');
-    grid.querySelectorAll('.sim-btn').forEach(btn => {
-      btn.addEventListener('click', () => ASTRA_EXPERIMENT.triggerActivity(btn.dataset.code));
-    });
+  function renderValidatorCard(status) {
+    const livePosture = $('#livePostureText');
+    if (livePosture) {
+      if (status.currentDetectedActivity) {
+        const confStr = status.currentConfidence ? ` (${status.currentConfidence.toFixed(0)}%)` : '';
+        livePosture.textContent = `${status.currentDetectedActivity}${confStr}`;
+      } else {
+        livePosture.textContent = ASTRA_MEDIA.exp.isActive() ? 'DETECTING MOVEMENT…' : 'AWAITING VIDEO / CAMERA';
+      }
+    }
+
+    const targetStep = $('#targetStepText');
+    if (targetStep) {
+      targetStep.textContent = status.completed ? 'ALL STEPS COMPLETED' : `STEP ${status.currentStepNumber}: ${status.expected}`;
+    }
+
+    const health = $('#validatorHealthText');
+    if (health) {
+      if (status.status === 'INVALID' && status.lastViolation) {
+        health.className = 'val red';
+        health.textContent = `⚠ VIOLATION (${status.lastViolation.detected})`;
+      } else if (status.completed) {
+        health.className = 'val green';
+        health.textContent = '✓ SEQUENCE COMPLETE';
+      } else {
+        health.className = 'val green';
+        health.textContent = '✓ NOMINAL';
+      }
+    }
+
+    const vBadge = $('#validatorStatusBadge');
+    if (vBadge) {
+      if (status.status === 'INVALID') {
+        vBadge.className = 'tag tag-mode-sim pulse';
+        vBadge.textContent = '⚠ VIOLATION DETECTED';
+      } else if (status.completed) {
+        vBadge.className = 'tag tag-green';
+        vBadge.textContent = '✓ SEQUENCE COMPLETE';
+      } else if (ASTRA_MEDIA.exp.isActive()) {
+        vBadge.className = 'tag tag-green pulse';
+        vBadge.textContent = '● AUTO-SHIFTING ON';
+      } else {
+        vBadge.className = 'tag tag-cyan';
+        vBadge.textContent = 'IDLE';
+      }
+    }
+
+    const voiceBtn = $('#toggleVoiceBtn');
+    if (voiceBtn) {
+      voiceBtn.innerHTML = status.voiceEnabled ? '<i data-lucide="volume-2"></i> VOICE: ON' : '<i data-lucide="volume-x"></i> VOICE: OFF';
+      if (window.lucide) window.lucide.createIcons();
+    }
   }
 
   function renderTimeline() {
@@ -643,7 +794,7 @@
     renderFsmDiagram(status);
     renderGuidance();
     renderViolationPanel(status);
-    renderSimButtons(status);
+    renderValidatorCard(status);
     renderTimeline();
     renderEventTables();
     renderDashExperimentMini(status);
@@ -656,9 +807,18 @@
   }
 
   function initExperimentControls() {
-    $('#simulateViolationBtn').addEventListener('click', () => ASTRA_EXPERIMENT.simulateViolation());
-    $('#resetExperimentBtn').addEventListener('click', () => ASTRA_EXPERIMENT.reset());
-    $('#exportLogBtn').addEventListener('click', () => ASTRA_EXPERIMENT.exportEventLogTxt());
+    const resetBtn = $('#resetExperimentBtn');
+    if (resetBtn) resetBtn.addEventListener('click', () => ASTRA_EXPERIMENT.reset());
+    const quickReset = $('#quickResetExpBtn');
+    if (quickReset) quickReset.addEventListener('click', () => ASTRA_EXPERIMENT.reset());
+    const voiceBtn = $('#toggleVoiceBtn');
+    if (voiceBtn) voiceBtn.addEventListener('click', () => {
+      const current = ASTRA_EXPERIMENT.getStatus().voiceEnabled;
+      ASTRA_EXPERIMENT.setVoiceEnabled(!current);
+      renderValidatorCard(ASTRA_EXPERIMENT.getStatus());
+    });
+    const exportBtn = $('#exportLogBtn');
+    if (exportBtn) exportBtn.addEventListener('click', () => ASTRA_EXPERIMENT.exportEventLogTxt());
     ASTRA_EXPERIMENT.subscribe(renderExperimentPage);
     renderExperimentPage(ASTRA_EXPERIMENT.getStatus());
   }
@@ -818,16 +978,17 @@
     ]);
   }
 
-  function updateVisionHud(videoId, imgId, resId, fpsId, mockFps) {
+  function updateVisionHud(videoId, imgId, resId, fpsId, mockFps, channel = 'live') {
     const video = document.getElementById(videoId);
     const img = document.getElementById(imgId);
     const resEl = document.getElementById(resId);
     const fpsEl = document.getElementById(fpsId);
     if (!resEl || !fpsEl) return;
-    const type = ASTRA_MEDIA.getType();
+    const mediaChan = ASTRA_MEDIA.getChannel(channel);
+    const type = mediaChan ? mediaChan.getType() : 'none';
 
     if (type === 'camera') {
-      const live = ASTRA_CAMERA.getLiveTelemetry();
+      const live = ASTRA_CAMERA.getLiveTelemetry(channel);
       if (live && live.width && live.height) {
         resEl.textContent = `${live.width}×${live.height}`;
         fpsEl.textContent = live.frameRate ? `${live.frameRate} FPS · LIVE` : 'LIVE CAM';
@@ -835,7 +996,7 @@
       }
     } else if (type === 'video' && video && video.videoWidth) {
       resEl.textContent = `${video.videoWidth}×${video.videoHeight}`;
-      fpsEl.textContent = `${mockFps} FPS`;
+      fpsEl.textContent = video.paused ? 'PAUSED' : `${mockFps} FPS`;
       return;
     } else if (type === 'image' && img && img.naturalWidth) {
       resEl.textContent = `${img.naturalWidth}×${img.naturalHeight}`;
@@ -843,7 +1004,7 @@
       return;
     }
     resEl.textContent = '1920×1080';
-    fpsEl.textContent = `${mockFps} FPS`;
+    fpsEl.textContent = 'IDLE';
   }
 
   function pollSystemMetrics() {
@@ -855,9 +1016,10 @@
       renderEdgePanel();
       renderStreamingPanels(m);
       ASTRA_VIZ.pushPerfSample(m.inference_fps, m.latency_ms);
-      updateVisionHud('videoFeedDash', 'imgFeedDash', 'visionResDash', 'visionFpsDash', m.inference_fps);
-      updateVisionHud('videoFeedLive', 'imgFeedLive', 'visionResLive', 'visionFpsLive', m.inference_fps);
-      updateVisionHud('videoFeedStream', 'imgFeedStream', 'visionResStream', 'visionFpsStream', m.inference_fps);
+      updateVisionHud('videoFeedDash', 'imgFeedDash', 'visionResDash', 'visionFpsDash', m.inference_fps, 'live');
+      updateVisionHud('videoFeedLive', 'imgFeedLive', 'visionResLive', 'visionFpsLive', m.inference_fps, 'live');
+      updateVisionHud('videoFeedStream', 'imgFeedStream', 'visionResStream', 'visionFpsStream', m.inference_fps, 'live');
+      updateVisionHud('videoFeedExp', 'imgFeedExp', 'visionResExp', 'visionFpsExp', m.inference_fps, 'exp');
     });
   }
 

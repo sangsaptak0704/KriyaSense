@@ -59,12 +59,22 @@ const ASTRA_ACTIVITY = (() => {
       seenIds.add(p.id);
       let rec = persons.get(p.id);
       if (!rec) {
-        rec = { id: p.id, activity: p.activity, confidence: p.confidence, reason: p.harReason || null, since: now, previous: null, history: [] };
+        rec = {
+          id: p.id,
+          activity: p.activity,
+          confidence: p.confidence,
+          reason: p.harReason || null,
+          bodyTelemetry: p.bodyTelemetry || null,
+          since: now,
+          previous: null,
+          history: [],
+        };
         rec.history.unshift({ time: nowStr(), label: labelFor(p.activity) });
         persons.set(p.id, rec);
       } else {
         rec.confidence = p.confidence;
         rec.reason = p.harReason || null;
+        if (p.bodyTelemetry) rec.bodyTelemetry = p.bodyTelemetry;
         if (rec.activity !== p.activity) {
           rec.previous = rec.activity;
           rec.activity = p.activity;
@@ -82,7 +92,13 @@ const ASTRA_ACTIVITY = (() => {
   function getAll() {
     return Array.from(persons.values())
       .sort((a, b) => a.id - b.id)
-      .map(r => ({ ...r, label: labelFor(r.activity), previousLabel: labelFor(r.previous), durationMs: Date.now() - r.since }));
+      .map(r => ({
+        ...r,
+        label: labelFor(r.activity),
+        previousLabel: labelFor(r.previous),
+        durationMs: Date.now() - r.since,
+        bodyTelemetry: r.bodyTelemetry || null,
+      }));
   }
 
   function getPrimary() {

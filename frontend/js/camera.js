@@ -8,16 +8,24 @@
 
 const ASTRA_CAMERA = (() => {
 
-  let activeStream = null;
-  let activeDeviceId = null;
+  const channelStreams = new Map(); // channelId -> { stream, deviceId }
   let cachedDevices = [];
 
-  function stopActiveStream() {
-    if (activeStream) {
-      activeStream.getTracks().forEach(t => t.stop());
-      activeStream = null;
+  function stopStreamForChannel(channelId = 'live') {
+    const entry = channelStreams.get(channelId);
+    if (entry && entry.stream) {
+      entry.stream.getTracks().forEach(t => t.stop());
+      channelStreams.delete(channelId);
     }
-    activeDeviceId = null;
+  }
+
+  function stopActiveStream() {
+    channelStreams.forEach(entry => {
+      if (entry && entry.stream) {
+        entry.stream.getTracks().forEach(t => t.stop());
+      }
+    });
+    channelStreams.clear();
   }
 
   async function listVideoDevices() {
@@ -35,14 +43,13 @@ const ASTRA_CAMERA = (() => {
     return cachedDevices;
   }
 
-  async function startLiveCamera(deviceId) {
-    stopActiveStream();
+  async function startLiveCamera(deviceId, channelId = 'live') {
+    stopStreamForChannel(channelId);
     try {
       const videoConstraints = { width: { ideal: 1280 }, height: { ideal: 720 } };
       if (deviceId) videoConstraints.deviceId = { exact: deviceId };
       const stream = await navigator.mediaDevices.getUserMedia({ video: videoConstraints, audio: false });
-      activeStream = stream;
-      activeDeviceId = deviceId || null;
+      channelStreams.set(channelId, { stream, deviceId: deviceId || null });
       listVideoDevices(); // labels are only populated once permission has been granted
       const track = stream.getVideoTracks()[0];
       return { ok: true, stream, deviceLabel: track ? track.label : '' };
@@ -51,13 +58,14 @@ const ASTRA_CAMERA = (() => {
     }
   }
 
-  function isLive() {
-    return !!activeStream;
+  function isLive(channelId = 'live') {
+    return channelStreams.has(channelId);
   }
 
-  function getLiveTelemetry() {
-    if (!activeStream) return null;
-    const track = activeStream.getVideoTracks()[0];
+  function getLiveTelemetry(channelId = 'live') {
+    const entry = channelStreams.get(channelId);
+    if (!entry || !entry.stream) return null;
+    const track = entry.stream.getVideoTracks()[0];
     if (!track) return null;
     const settings = track.getSettings ? track.getSettings() : {};
     return {
@@ -65,7 +73,7 @@ const ASTRA_CAMERA = (() => {
       height: settings.height || 0,
       frameRate: settings.frameRate ? Math.round(settings.frameRate) : null,
       deviceLabel: track.label || 'Camera',
-      deviceId: activeDeviceId,
+      deviceId: entry.deviceId,
     };
   }
 
@@ -75,6 +83,7 @@ const ASTRA_CAMERA = (() => {
 
   return {
     startLiveCamera,
+    stopStreamForChannel,
     stopActiveStream,
     isCameraSupported,
     listVideoDevices,

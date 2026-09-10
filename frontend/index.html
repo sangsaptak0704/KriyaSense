@@ -257,12 +257,62 @@
         </div>
         <div class="grid grid-exp">
 
+          <div class="panel panel-vision span-8">
+            <div class="panel-head">
+              <div class="panel-head-title"><i data-lucide="scan-eye"></i> LIVE AI VISION — DETECTION OVERLAY</div>
+              <div class="panel-head-tags">
+                <span class="tag" id="modeTagExp">…</span>
+                <span class="tag tag-cyan" id="expSourceTag">SOURCE: IDLE</span>
+              </div>
+            </div>
+            <div class="vision-stage" id="visionStageExp">
+              <video id="videoFeedExp" class="vision-video" autoplay muted playsinline hidden></video>
+              <img id="imgFeedExp" class="vision-image" alt="Uploaded frame" hidden>
+              <canvas id="overlayCanvasExp" class="vision-overlay"></canvas>
+              <div class="vision-scanline"></div>
+              <div class="vision-corner tl"></div><div class="vision-corner tr"></div>
+              <div class="vision-corner bl"></div><div class="vision-corner br"></div>
+              <div class="vision-hud-top">
+                <span>REC ●</span><span id="visionResExp">1920×1080</span><span id="visionFpsExp">30 FPS</span>
+              </div>
+            </div>
+            <div class="video-controls">
+              <div class="mode-toggle" id="detectionModeToggleExp">
+                <button class="mode-btn" data-mode="REAL">REAL DETECTION</button>
+                <button class="mode-btn" data-mode="SIMULATED">SIMULATED (BAS DEMO)</button>
+              </div>
+            </div>
+            <div class="video-controls">
+              <label class="btn btn-outline">
+                <i data-lucide="upload"></i> Upload Image / Video
+                <input type="file" id="videoUploadInputExp" accept="image/*,video/*" hidden>
+              </label>
+              <select id="cameraDeviceSelectExp" class="form-input select-compact" title="Select camera device"></select>
+              <button class="btn btn-outline" id="startCameraBtnExp"><i data-lucide="camera"></i> Live Camera</button>
+              <button class="btn btn-outline" id="playPauseBtnExp"><i data-lucide="play"></i> Play</button>
+              <button class="btn btn-outline" id="clearFeedBtnExp"><i data-lucide="x"></i> Clear Feed</button>
+            </div>
+            <div class="hint-text" id="detectionModeHintExp">Real on-device detection (person + pose + generic objects, COCO classes only) — runs fully offline, no footage leaves this device.</div>
+          </div>
+
           <div class="panel span-4">
-            <div class="panel-head"><div class="panel-head-title"><i data-lucide="list-ordered"></i> EXPERIMENT SEQUENCE</div></div>
+            <div class="panel-head">
+              <div class="panel-head-title"><i data-lucide="list-ordered"></i> EXPERIMENT SEQUENCE</div>
+              <div class="panel-head-tags">
+                <span class="tag tag-cyan" id="expValidationBadge">IDLE</span>
+                <button class="btn btn-ghost btn-sm" id="quickResetExpBtn" title="Reset Sequence" style="padding:2px 8px;font-size:11px;"><i data-lucide="rotate-ccw"></i> Reset</button>
+              </div>
+            </div>
             <div class="step-list" id="stepList"></div>
             <div class="step-progress">
-              <span>STEP <b id="stepCurrent">3</b> / <span id="stepTotal">6</span></span>
+              <span>STEP <b id="stepCurrent">1</b> / <span id="stepTotal">3</span></span>
+              <div id="stepLiveFeedback" style="font-size:11px; margin-top:5px; font-family:var(--mono); color:var(--text-muted);"></div>
             </div>
+          </div>
+
+          <div class="panel span-12" id="violationPanel" style="display:none;">
+            <div class="panel-head"><div class="panel-head-title alert-title"><i data-lucide="alert-triangle"></i> SEQUENCE VIOLATION</div></div>
+            <div class="violation-box" id="violationBox"></div>
           </div>
 
           <div class="panel span-4">
@@ -276,17 +326,34 @@
             <div class="guidance-box" id="guidanceBox"></div>
           </div>
 
-          <div class="panel span-6" id="violationPanel" style="display:none;">
-            <div class="panel-head"><div class="panel-head-title alert-title"><i data-lucide="alert-triangle"></i> SEQUENCE VIOLATION</div></div>
-            <div class="violation-box" id="violationBox"></div>
-          </div>
-
-          <div class="panel span-6">
-            <div class="panel-head"><div class="panel-head-title"><i data-lucide="sliders-horizontal"></i> AI SIMULATION — DEMO CONTROLS</div></div>
-            <div class="sim-btn-grid" id="simBtnGrid"></div>
-            <div class="sim-btn-row">
-              <button class="btn btn-danger" id="simulateViolationBtn"><i data-lucide="alert-triangle"></i> SIMULATE VIOLATION</button>
-              <button class="btn btn-outline" id="resetExperimentBtn"><i data-lucide="rotate-ccw"></i> RESET</button>
+          <div class="panel span-4">
+            <div class="panel-head">
+              <div class="panel-head-title"><i data-lucide="activity"></i> REAL-TIME SEQUENCE VALIDATOR</div>
+              <div class="panel-head-tags">
+                <span class="tag tag-green pulse" id="validatorStatusBadge">● AUTO-SHIFTING ON</span>
+              </div>
+            </div>
+            <div class="validator-card" id="validatorCard">
+              <div class="validator-stat-row">
+                <span class="lbl">LIVE HUMAN MOVEMENT</span>
+                <span class="val cyan" id="livePostureText">AWAITING VIDEO / CAMERA</span>
+              </div>
+              <div class="validator-stat-row">
+                <span class="lbl">ACTIVE EXPECTED STEP</span>
+                <span class="val" id="targetStepText">—</span>
+              </div>
+              <div class="validator-stat-row">
+                <span class="lbl">VALIDATION MODE</span>
+                <span class="val green">100% AUTOMATIC (VIDEO DRIVEN)</span>
+              </div>
+              <div class="validator-stat-row">
+                <span class="lbl">STEP HEALTH</span>
+                <span class="val green" id="validatorHealthText">NOMINAL</span>
+              </div>
+            </div>
+            <div class="sim-btn-row" style="margin-top:12px; display:flex; gap:8px;">
+              <button class="btn btn-outline" id="resetExperimentBtn" style="flex:1;"><i data-lucide="rotate-ccw"></i> RESET PROTOCOL</button>
+              <button class="btn btn-outline" id="toggleVoiceBtn" style="flex:1;"><i data-lucide="volume-2"></i> VOICE: ON</button>
             </div>
           </div>
 

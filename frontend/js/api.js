@@ -36,17 +36,20 @@ const ASTRA_API = (() => {
 
   let socketInterval = null;
   let analysisRunning = true;
-  let tracker = null;
+  const trackers = { live: null, exp: null };
   let subscribedToMedia = false;
 
   let detectionMode = 'REAL'; // 'REAL' | 'SIMULATED' — which inference pipeline drives the overlay
   let realEls = { video: null, img: null };
-  let cachedMockImageFrame = null;
-  let cachedRealImageFrame = null;
+  const cachedImages = {
+    live: { mock: null, real: null },
+    exp: { mock: null, real: null },
+  };
   const modeSubscribers = [];
 
-  function ensureTracker() {
-    if (!tracker) tracker = ASTRA_TRACKING.createTracker();
+  function ensureTracker(channel = 'live') {
+    if (!trackers[channel]) trackers[channel] = ASTRA_TRACKING.createTracker();
+    return trackers[channel];
   }
 
   function setRealDetectionElements(els) {
@@ -79,11 +82,19 @@ const ASTRA_API = (() => {
   // as UNCERTAIN with a reason rather than guessing or showing a bare label.
   const NO_POSE_RESULT = { activity: 'UNCERTAIN', harReason: 'No pose landmarks for this person' };
 
-  function applyHarVideo(persons, objects) {
+  function applyHarVideo(channel, persons, objects) {
     return persons.map(p => {
       if (!p.worldPose) return { ...p, ...NO_POSE_RESULT };
-      const result = ASTRA_HAR.classifyVideoFrame(p.id, p.worldPose, nearbyObjectLabels(p, objects));
-      return { ...p, activity: result.activity, confidence: result.confidence, harReason: result.reason, harPrevious: result.previous };
+      const trackKey = `${channel}_${p.id}`;
+      const result = ASTRA_HAR.classifyVideoFrame(trackKey, p.worldPose, nearbyObjectLabels(p, objects));
+      return {
+        ...p,
+        activity: result.activity,
+        confidence: result.confidence,
+        harReason: result.reason,
+        harPrevious: result.previous,
+        bodyTelemetry: result.bodyTelemetry,
+      };
     });
   }
 
@@ -91,27 +102,60 @@ const ASTRA_API = (() => {
     return persons.map(p => {
       if (!p.worldPose) return { ...p, ...NO_POSE_RESULT };
       const result = ASTRA_HAR.classifyStaticImage(p.worldPose, nearbyObjectLabels(p, objects));
-      return { ...p, activity: result.activity, confidence: result.confidence, harReason: result.reason };
+      return {
+        ...p,
+        activity: result.activity,
+        confidence: result.confidence,
+        harReason: result.reason,
+        bodyTelemetry: result.bodyTelemetry,
+      };
     });
   }
 
-  async function refreshForCurrentMedia() {
-    ensureTracker();
-    tracker.reset();
-    ASTRA_HAR.resetAll();
-    const type = ASTRA_MEDIA.getType();
-    cachedMockImageFrame = null;
-    cachedRealImageFrame = null;
+  function getImageForChannel(channel = 'live') {
+    if (channel === 'exp') {
+      return document.getElementById('imgFeedExp');
+    }
+    return document.getElementById('imgFeedLive') || (realEls ? realEls.img : null);
+  }
+
+  function getVideoForChannel(channel = 'live') {
+    if (channel === 'exp') {
+      const v = document.getElementById('videoFeedExp');
+      return (v && !v.hidden && v.videoWidth > 0) ? v : null;
+    }
+    const list = [
+      document.getElementById('videoFeedLive'),
+      document.getElementById('videoFeedDash'),
+      document.getElementById('videoFeedStream'),
+    ];
+    for (const v of list) {
+      if (v && !v.hidden && v.videoWidth > 0 && v.offsetParent !== null) {
+        return v;
+      }
+    }
+    for (const v of list) {
+      if (v && !v.hidden && v.videoWidth > 0) {
+        return v;
+      }
+    }
+    return realEls ? realEls.video : null;
+  }
+
+  async function refreshForChannel(channel = 'live') {
+    const tr = ensureTracker(channel);
+    tr.reset();
+    const mediaChan = ASTRA_MEDIA.getChannel(channel);
+    const type = mediaChan ? mediaChan.getType() : 'none';
+    cachedImages[channel] = { mock: null, real: null };
 
     if (type === 'image') {
-      cachedMockImageFrame = ASTRA_DETECTION.generateImageDetections();
-      if (detectionMode === 'REAL' && ASTRA_REAL_DETECTION.isReady() && realEls.img) {
-        const frame = await ASTRA_REAL_DETECTION.detectImageAsync(realEls.img);
-        // One-shot classification — a static image has no motion history, so
-        // this runs once here rather than every poll tick (the result can't
-        // change without new pixels).
+      cachedImages[channel].mock = ASTRA_DETECTION.generateImageDetections();
+      const imgEl = getImageForChannel(channel);
+      if (detectionMode === 'REAL' && ASTRA_REAL_DETECTION.isReady() && imgEl) {
+        const frame = await ASTRA_REAL_DETECTION.detectImageAsync(imgEl);
         frame.persons = applyHarImage(frame.persons, frame.objects);
-        cachedRealImageFrame = frame;
+        cachedImages[channel].real = frame;
       }
       return;
     }
@@ -119,6 +163,11 @@ const ASTRA_API = (() => {
     if ((type === 'video' || type === 'camera') && detectionMode === 'REAL' && ASTRA_REAL_DETECTION.isReady()) {
       await ASTRA_REAL_DETECTION.prepareForVideo();
     }
+  }
+
+  async function refreshForCurrentMedia() {
+    await refreshForChannel('live');
+    await refreshForChannel('exp');
   }
 
   function setDetectionMode(m) {
@@ -146,35 +195,41 @@ const ASTRA_API = (() => {
     });
   }
 
-  function computeFrame() {
-    ensureTracker();
-    const type = ASTRA_MEDIA.getType();
+  function computeFrame(channel = 'live') {
+    const tr = ensureTracker(channel);
+    const mediaChan = ASTRA_MEDIA.getChannel(channel);
+    const type = mediaChan ? mediaChan.getType() : 'none';
     const useReal = detectionMode === 'REAL' && ASTRA_REAL_DETECTION.isReady();
 
     if (type === 'image') {
-      const f = (useReal ? cachedRealImageFrame : cachedMockImageFrame) || { persons: [], objects: [] };
-      return { timestamp: new Date().toISOString(), persons: f.persons, objects: f.objects };
+      const entry = cachedImages[channel] || {};
+      const f = (useReal ? entry.real : entry.mock) || { persons: [], objects: [] };
+      return { timestamp: new Date().toISOString(), persons: f.persons || [], objects: f.objects || [], channel };
     }
 
     if (type === 'video' || type === 'camera') {
-      if (useReal && realEls.video) {
-        const raw = ASTRA_REAL_DETECTION.detectVideoFrameSync(realEls.video, Math.round(performance.now()));
-        const tracked = tracker.update([...raw.persons, ...raw.objects]);
+      const activeVideo = getVideoForChannel(channel);
+      if (useReal && activeVideo) {
+        const raw = ASTRA_REAL_DETECTION.detectVideoFrameSync(activeVideo, Math.round(performance.now()));
+        const tracked = tr.update([...raw.persons, ...raw.objects]);
         const objects = tracked.filter(x => x.kind === 'object');
-        const persons = applyHarVideo(tracked.filter(x => x.kind === 'person'), objects);
-        return { timestamp: new Date().toISOString(), persons, objects };
+        const persons = applyHarVideo(channel, tracked.filter(x => x.kind === 'person'), objects);
+        return { timestamp: new Date().toISOString(), persons, objects, channel };
       }
-      const t = performance.now() / 1000;
-      const { persons, objects } = ASTRA_DETECTION.generateLiveCandidates(t);
-      const tracked = tracker.update([...persons, ...objects]);
-      return {
-        timestamp: new Date().toISOString(),
-        persons: tracked.filter(x => x.kind === 'person'),
-        objects: tracked.filter(x => x.kind === 'object'),
-      };
+      if (detectionMode === 'SIMULATED') {
+        const t = performance.now() / 1000;
+        const { persons, objects } = ASTRA_DETECTION.generateLiveCandidates(t);
+        const tracked = tr.update([...persons, ...objects]);
+        return {
+          timestamp: new Date().toISOString(),
+          persons: tracked.filter(x => x.kind === 'person'),
+          objects: tracked.filter(x => x.kind === 'object'),
+          channel,
+        };
+      }
     }
 
-    return { timestamp: new Date().toISOString(), persons: [], objects: [] };
+    return { timestamp: new Date().toISOString(), persons: [], objects: [], channel };
   }
 
   /* ---------------------------------------------------------------------
@@ -186,7 +241,8 @@ const ASTRA_API = (() => {
   function connectWebSocket(onFrame) {
     if (!subscribedToMedia) {
       subscribedToMedia = true;
-      ASTRA_MEDIA.subscribe(refreshForCurrentMedia);
+      ASTRA_MEDIA.live.subscribe(() => refreshForChannel('live'));
+      ASTRA_MEDIA.exp.subscribe(() => refreshForChannel('exp'));
       refreshForCurrentMedia();
       initRealDetectionEagerly();
     }
@@ -195,7 +251,8 @@ const ASTRA_API = (() => {
     if (socketInterval) clearInterval(socketInterval);
     socketInterval = setInterval(() => {
       if (!analysisRunning) return;
-      onFrame(computeFrame());
+      onFrame(computeFrame('live'));
+      onFrame(computeFrame('exp'));
     }, 150); // ~6.6 Hz — a realistic inference cadence; canvas redraw itself still runs at 60fps
     return Promise.resolve({ status: 'connected', mode: CONFIG.mode });
   }

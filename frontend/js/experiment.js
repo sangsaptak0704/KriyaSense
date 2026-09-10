@@ -95,16 +95,58 @@ const ASTRA_EXPERIMENT = (() => {
     if (state.timeline.length > 100) state.timeline.pop();
   }
 
+  function playAlertBeep() {
+    try {
+      const AudioCtx = window.AudioContext || window.webkitAudioContext;
+      if (!AudioCtx) return;
+      const ctx = new AudioCtx();
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.type = 'sawtooth';
+      osc.frequency.setValueAtTime(880, ctx.currentTime);
+      osc.frequency.setValueAtTime(440, ctx.currentTime + 0.15);
+      gain.gain.setValueAtTime(0.2, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.35);
+      osc.start();
+      osc.stop(ctx.currentTime + 0.35);
+    } catch (e) {}
+  }
+
   function speak(text) {
     if (!state.voiceEnabled) return;
     if (!('speechSynthesis' in window)) return;
     try {
       window.speechSynthesis.cancel();
       const utter = new SpeechSynthesisUtterance(text);
-      utter.rate = 0.98;
-      utter.pitch = 0.95;
+      utter.rate = 1.0;
+      utter.pitch = 1.0;
+      utter.lang = 'en-US';
       window.speechSynthesis.speak(utter);
     } catch (e) { /* speech synthesis unavailable — non-fatal for the demo */ }
+  }
+
+  let liveTracking = {
+    candidateActivity: null,
+    candidateCount: 0,
+    lastSatisfiedIndex: -1,
+    currentHeldActivity: null,
+    violationReportedFor: null,
+    gracePeriodUntil: 0,
+    latestConfidence: null,
+  };
+
+  function resetLiveTracking() {
+    liveTracking = {
+      candidateActivity: null,
+      candidateCount: 0,
+      lastSatisfiedIndex: -1,
+      currentHeldActivity: null,
+      violationReportedFor: null,
+      gracePeriodUntil: Date.now() + 2500,
+      latestConfidence: null,
+    };
   }
 
   function jitter(base, spread) {
@@ -119,6 +161,7 @@ const ASTRA_EXPERIMENT = (() => {
       experimentName: state.experimentName,
       sequence: state.sequence,
       currentIndex: state.currentIndex,
+      lastSatisfiedIndex: liveTracking.lastSatisfiedIndex,
       currentStepNumber: Math.min(state.currentIndex + 1, state.sequence.length),
       totalSteps: state.sequence.length,
       expected: expectedStep ? expectedStep.label : '—',
@@ -127,6 +170,8 @@ const ASTRA_EXPERIMENT = (() => {
       lastViolation: state.lastViolation,
       completed: state.completed,
       voiceEnabled: state.voiceEnabled,
+      currentDetectedActivity: liveTracking.candidateActivity ? labelFor(liveTracking.candidateActivity) : null,
+      currentConfidence: liveTracking.latestConfidence,
     };
   }
 
@@ -193,11 +238,147 @@ const ASTRA_EXPERIMENT = (() => {
     return triggerActivity(wrong);
   }
 
+  function processLiveDetection(person) {
+    if (state.completed) return;
+    if (!person || !person.activity || person.activity === 'UNCERTAIN') {
+      liveTracking.candidateCount = 0;
+      return;
+    }
+    const conf = typeof person.confidence === 'number' ? person.confidence : 80;
+    if (conf < 40) return;
+
+    liveTracking.latestConfidence = conf;
+    const rawCode = person.activity;
+    const now = Date.now();
+
+    // Stability debounce: 2 consecutive frames (~300ms) for snappy auto-shifting
+    if (liveTracking.candidateActivity === rawCode) {
+      liveTracking.candidateCount += 1;
+    } else {
+      liveTracking.candidateActivity = rawCode;
+      liveTracking.candidateCount = 1;
+    }
+
+    if (liveTracking.candidateCount < 2) return;
+
+    const stableCode = liveTracking.candidateActivity;
+    const currentStep = state.sequence[state.currentIndex];
+    if (!currentStep) return;
+
+    // --- PHASE 1: Step 0 awaiting initial start ---
+    if (liveTracking.lastSatisfiedIndex === -1 && state.currentIndex === 0) {
+      if (stableCode === currentStep.code) {
+        // Initial required posture detected!
+        liveTracking.lastSatisfiedIndex = 0;
+        liveTracking.currentHeldActivity = stableCode;
+        liveTracking.violationReportedFor = null;
+        state.status = 'VALID';
+        state.lastViolation = null;
+
+        pushEvent('Activity', currentStep.label, conf, currentStep.label, 'ACTIVE');
+        pushTimeline(`● Step 1: ${currentStep.label} started`, 'success');
+        speak(`${currentStep.label} detected. Step 1 active.`);
+        notify();
+        return;
+      }
+
+      // Initial grace period so user can settle into first position
+      if (!liveTracking.gracePeriodUntil) {
+        liveTracking.gracePeriodUntil = now + 2500;
+      }
+      if (now < liveTracking.gracePeriodUntil) {
+        return;
+      }
+
+      // Out of order before starting step 1
+      if (state.status !== 'INVALID' || liveTracking.violationReportedFor !== stableCode) {
+        const detectedLabel = labelFor(stableCode);
+        state.status = 'INVALID';
+        state.lastViolation = {
+          expected: currentStep.label,
+          detected: detectedLabel,
+          step: 1,
+          severity: 'HIGH',
+        };
+        liveTracking.violationReportedFor = stableCode;
+        playAlertBeep();
+        speak(`Warning. Expected ${currentStep.label} at Step 1, but ${detectedLabel} was detected.`);
+        pushEvent('Validation', detectedLabel, conf, currentStep.label, 'VIOLATION');
+        pushTimeline(`⚠ VIOLATION on Step 1: Expected ${currentStep.label}, got ${detectedLabel}`, 'violation');
+        notify();
+      }
+      return;
+    }
+
+    // --- PHASE 2: Human is maintaining posture of current active step ---
+    if (stableCode === liveTracking.currentHeldActivity) {
+      return;
+    }
+
+    // --- PHASE 3: Human has CHANGED movement! ---
+    const nextIndex = state.currentIndex + 1;
+
+    if (nextIndex < state.sequence.length) {
+      const nextStep = state.sequence[nextIndex];
+      if (stableCode === nextStep.code) {
+        // MATCH! Automatically shift from previous step to next step
+        const prevStep = state.sequence[state.currentIndex];
+        pushEvent('Activity', prevStep.label, conf, prevStep.label, 'DONE');
+        pushTimeline(`✓ Step ${state.currentIndex + 1}: ${prevStep.label} completed`, 'success');
+
+        state.currentIndex = nextIndex;
+        liveTracking.lastSatisfiedIndex = nextIndex;
+        liveTracking.currentHeldActivity = stableCode;
+        liveTracking.violationReportedFor = null;
+        state.status = 'VALID';
+        state.lastViolation = null;
+
+        speak(`${prevStep.label} complete. Shifted to Step ${nextIndex + 1}: ${nextStep.label}.`);
+
+        // If this is the final step in the sequence:
+        if (nextIndex === state.sequence.length - 1) {
+          pushTimeline(`● Final Step: ${nextStep.label} active`, 'success');
+        }
+        notify();
+        return;
+      } else {
+        // Human changed to an unexpected movement -> Sequence violation on next step!
+        if (state.status !== 'INVALID' || liveTracking.violationReportedFor !== stableCode) {
+          const detectedLabel = labelFor(stableCode);
+          state.status = 'INVALID';
+          state.lastViolation = {
+            expected: nextStep.label,
+            detected: detectedLabel,
+            step: nextIndex + 1,
+            severity: 'HIGH',
+          };
+          liveTracking.violationReportedFor = stableCode;
+          playAlertBeep();
+          speak(`Warning. Sequence violation detected. Expected ${nextStep.label} at Step ${nextIndex + 1}, but ${detectedLabel} was detected.`);
+          pushEvent('Validation', detectedLabel, conf, nextStep.label, 'VIOLATION');
+          pushTimeline(`⚠ VIOLATION on Step ${nextIndex + 1}: Expected ${nextStep.label}, got ${detectedLabel}`, 'violation');
+          notify();
+        }
+        return;
+      }
+    } else {
+      // Sequence was already on last step and human moved away -> Finish!
+      state.completed = true;
+      state.status = 'VALID';
+      state.lastViolation = null;
+      pushTimeline('✓ ALL STEPS VALIDATED', 'success');
+      speak('Experiment complete! All sequence steps validated successfully.');
+      notify();
+      return;
+    }
+  }
+
   function reset() {
     state.currentIndex = 0;
     state.status = 'VALID';
     state.lastViolation = null;
     state.completed = false;
+    resetLiveTracking();
     pushTimeline('↺ EXPERIMENT RESET', 'success');
     pushEvent('System', '—', 100, '—', 'RESET');
     notify();
@@ -211,6 +392,7 @@ const ASTRA_EXPERIMENT = (() => {
     state.status = 'VALID';
     state.lastViolation = null;
     state.completed = false;
+    resetLiveTracking();
     pushTimeline(`⚙ EXPERIMENT LOADED: ${state.experimentName}`, 'success');
     pushEvent('System', '—', 100, '—', 'LOADED');
     notify();
@@ -273,6 +455,8 @@ const ASTRA_EXPERIMENT = (() => {
     repeatGuidance,
     exportEventLogTxt,
     speak,
+    processLiveDetection,
+    resetLiveTracking,
   };
 })();
 

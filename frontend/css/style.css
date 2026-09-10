@@ -652,6 +652,9 @@ button:focus-visible, input:focus-visible, select:focus-visible, a:focus-visible
 .step-item.current{border-color:rgba(56,139,253,0.6);background:rgba(56,139,253,0.06);}
 .step-item.current .step-icon{background:rgba(56,139,253,0.12);border-color:var(--accent-signal);color:var(--accent-signal);}
 .step-item.current .step-label{color:var(--accent-signal);}
+.step-item.violation{border-color:rgba(248,81,73,0.7);background:rgba(248,81,73,0.12);box-shadow:0 0 10px rgba(248,81,73,0.25);}
+.step-item.violation .step-icon{background:rgba(248,81,73,0.2);border-color:var(--status-critical);color:var(--status-critical);}
+.step-item.violation .step-label{color:var(--status-critical);font-weight:700;}
 .step-progress{margin-top:14px;text-align:center;font-family:var(--mono);font-size:13px;color:var(--text-1);letter-spacing:.4px;}
 .step-progress b{color:var(--cyan);font-size:18px;}
 
@@ -685,6 +688,16 @@ button:focus-visible, input:focus-visible, select:focus-visible, a:focus-visible
   align-self:flex-start;font-family:var(--mono);font-size:11px;font-weight:700;letter-spacing:.5px;
   padding:5px 12px;border-radius:20px;background:#2a0a0d;color:var(--red);border:1px solid #5c1a22;
 }
+
+/* ============================== VALIDATOR CARD ============================== */
+.validator-card{display:flex;flex-direction:column;gap:10px;background:#0a1320;border:1px solid var(--panel-border);border-radius:9px;padding:12px 14px;}
+.validator-stat-row{display:flex;align-items:center;justify-content:space-between;padding:5px 0;border-bottom:1px dashed rgba(255,255,255,0.06);}
+.validator-stat-row:last-child{border-bottom:none;}
+.validator-stat-row .lbl{font-family:var(--mono);font-size:10px;letter-spacing:.4px;color:var(--text-2);text-transform:uppercase;}
+.validator-stat-row .val{font-family:var(--mono);font-size:12.5px;font-weight:700;color:var(--text-0);}
+.validator-stat-row .val.green{color:var(--status-nominal);}
+.validator-stat-row .val.cyan{color:var(--accent-signal);}
+.validator-stat-row .val.red{color:var(--status-critical);}
 
 /* ============================== SIM BUTTONS ============================== */
 .sim-btn-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:12px;}
