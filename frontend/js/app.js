@@ -498,12 +498,12 @@
 
   function initMediaPanels() {
     // Register live panels
-    ASTRA_MEDIA.live.registerPanel({ video: $('#videoFeedDash'), img: $('#imgFeedDash') });
-    ASTRA_MEDIA.live.registerPanel({ video: $('#videoFeedLive'), img: $('#imgFeedLive') });
-    ASTRA_MEDIA.live.registerPanel({ video: $('#videoFeedStream'), img: $('#imgFeedStream') });
+    ASTRA_MEDIA.live.registerPanel({ video: $('#videoFeedDash'), img: $('#imgFeedDash'), stage: $('#visionStageDash') });
+    ASTRA_MEDIA.live.registerPanel({ video: $('#videoFeedLive'), img: $('#imgFeedLive'), stage: $('#visionStageLive') });
+    ASTRA_MEDIA.live.registerPanel({ video: $('#videoFeedStream'), img: $('#imgFeedStream'), stage: $('#visionStageStream') });
 
     // Register experiment panel (strictly isolated from live feed!)
-    ASTRA_MEDIA.exp.registerPanel({ video: $('#videoFeedExp'), img: $('#imgFeedExp') });
+    ASTRA_MEDIA.exp.registerPanel({ video: $('#videoFeedExp'), img: $('#imgFeedExp'), stage: $('#visionStageExp') });
 
     ASTRA_MEDIA.live.subscribe((mstate) => {
       const label = sourceLabelFor(mstate);

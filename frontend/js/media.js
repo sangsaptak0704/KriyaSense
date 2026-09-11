@@ -34,6 +34,63 @@ class MediaChannel {
     return { channel: this.id, type: this.currentType, label: this.currentLabel };
   }
 
+  findStage(panel) {
+    if (panel.stage) return panel.stage;
+    if (panel.video) {
+      if (typeof panel.video.closest === 'function') return panel.video.closest('.vision-stage');
+      if (panel.video.parentElement) return panel.video.parentElement;
+    }
+    if (panel.img) {
+      if (typeof panel.img.closest === 'function') return panel.img.closest('.vision-stage');
+      if (panel.img.parentElement) return panel.img.parentElement;
+    }
+    return null;
+  }
+
+  updatePanelStage(panel) {
+    const stage = this.findStage(panel);
+    if (!stage || !stage.style) return;
+
+    let naturalW = 0, naturalH = 0;
+    if (this.currentType === 'video' || this.currentType === 'camera') {
+      if (panel.video && panel.video.videoWidth && panel.video.videoHeight) {
+        naturalW = panel.video.videoWidth;
+        naturalH = panel.video.videoHeight;
+      }
+    } else if (this.currentType === 'image') {
+      if (panel.img && panel.img.naturalWidth && panel.img.naturalHeight) {
+        naturalW = panel.img.naturalWidth;
+        naturalH = panel.img.naturalHeight;
+      }
+    }
+
+    if (naturalW > 0 && naturalH > 0) {
+      const ratio = naturalW / naturalH;
+      stage.style.aspectRatio = `${naturalW} / ${naturalH}`;
+      const maxH = Math.min(540, typeof window !== 'undefined' && window.innerHeight ? Math.round(window.innerHeight * 0.65) : 540);
+      if (ratio < 1) {
+        // Vertical / portrait media (e.g. 9:16 like 1080x1920)
+        const targetW = Math.max(220, Math.round(maxH * ratio));
+        stage.style.width = `min(100%, ${targetW}px)`;
+      } else if (ratio < 1.35) {
+        // Square or ~4:3 media
+        const targetW = Math.round(maxH * ratio);
+        stage.style.width = `min(100%, ${targetW}px)`;
+      } else {
+        // Standard landscape (16:9 or wider)
+        stage.style.width = '100%';
+      }
+    } else {
+      // Idle / no active media: reset to 16:9 full width
+      stage.style.aspectRatio = '16 / 9';
+      stage.style.width = '100%';
+    }
+  }
+
+  updateAllStages() {
+    this.panels.forEach(p => this.updatePanelStage(p));
+  }
+
   applyToPanel(panel) {
     const { video, img } = panel;
     if (!video || !img) return;
@@ -46,6 +103,7 @@ class MediaChannel {
       video.hidden = false;
       img.hidden = true;
       video.play().catch(() => {});
+      this.updatePanelStage(panel);
     } else if (this.currentType === 'video') {
       video.srcObject = null;
       video.src = this.currentUrl;
@@ -54,6 +112,7 @@ class MediaChannel {
       video.hidden = false;
       img.hidden = true;
       video.play().catch(() => {});
+      this.updatePanelStage(panel);
     } else if (this.currentType === 'image') {
       video.pause();
       video.srcObject = null;
@@ -61,6 +120,7 @@ class MediaChannel {
       img.src = this.currentUrl;
       video.hidden = true;
       img.hidden = false;
+      this.updatePanelStage(panel);
     } else {
       video.pause();
       video.srcObject = null;
@@ -68,6 +128,7 @@ class MediaChannel {
       img.removeAttribute('src');
       video.hidden = true;
       img.hidden = true;
+      this.updatePanelStage(panel);
     }
   }
 
@@ -76,7 +137,22 @@ class MediaChannel {
   }
 
   registerPanel(panel) {
+    if (!panel.stage) {
+      panel.stage = this.findStage(panel);
+    }
     this.panels.push(panel);
+
+    const onMediaReady = () => this.updatePanelStage(panel);
+    if (panel.video && typeof panel.video.addEventListener === 'function') {
+      panel.video.addEventListener('loadedmetadata', onMediaReady);
+      panel.video.addEventListener('loadeddata', onMediaReady);
+      panel.video.addEventListener('canplay', onMediaReady);
+      panel.video.addEventListener('resize', onMediaReady);
+    }
+    if (panel.img && typeof panel.img.addEventListener === 'function') {
+      panel.img.addEventListener('load', onMediaReady);
+    }
+
     this.applyToPanel(panel);
   }
 
@@ -200,5 +276,15 @@ const ASTRA_MEDIA = (() => {
     getType: (ch = 'live') => getChannel(ch).getType(),
     getState: (ch = 'live') => getChannel(ch).getState(),
     subscribe: (fn, ch = 'live') => getChannel(ch).subscribe(fn),
+    updateAllStages: () => {
+      channels.live.updateAllStages();
+      channels.exp.updateAllStages();
+    },
   };
 })();
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('resize', () => {
+    ASTRA_MEDIA.updateAllStages();
+  });
+}
