@@ -394,7 +394,8 @@ button{font-family:inherit;}
 .person-card-activity{font-family:var(--mono);font-size:13px;font-weight:700;color:var(--text-0);}
 .person-card-conf{font-family:var(--mono);font-size:11px;color:var(--green);}
 .person-card .meter{height:5px;margin-top:6px;}
-.person-card-reason{font-size:10px;color:var(--orange);margin-top:6px;font-style:italic;}
+.person-card-reason{font-family:var(--mono);font-size:10.5px;color:var(--text-secondary);margin-top:6px;letter-spacing:.2px;}
+.person-card-reason.reason-warn{color:var(--status-caution);font-style:italic;}
 .person-list-empty{
   text-align:center;padding:26px 10px;color:var(--text-2);
   font-family:var(--mono);font-size:12px;letter-spacing:.3px;

@@ -38,6 +38,20 @@ const ASTRA_HAR = (() => {
   ];
   const TEMPORAL_ONLY = new Set(['WALKING', 'RUNNING', 'OPENING', 'CLOSING']);
 
+  // User-defined AI activity descriptions
+  const ACTIVITY_DESCRIPTIONS = {
+    STANDING: 'Standing = upright body + extended legs + low movement',
+    SITTING: 'Sitting = bent hips + bent knees + supported body',
+    WALKING: 'Walking = alternating leg movement + changing body position',
+    RUNNING: 'Running = fast hands & legs movement + dynamic alternation',
+    READING: 'Reading = bowed head + document inspection',
+    WRITING: 'Writing = bowed head + focal hand movement',
+    USING_LAPTOP: 'Using laptop = seated posture + hands resting in front',
+    USING_PHONE: 'Using phone = hand raised to head + elbow flexed',
+    OPENING: 'Opening = reaching forward with displacement',
+    CLOSING: 'Closing = reaching with retracting displacement',
+  };
+
   const WINDOW_SIZE = 24;             // rolling history length (frames)
   const MIN_TEMPORAL_FRAMES = 4;      // minimum samples before motion features are trusted
   const SMOOTH_WINDOW = 4;            // majority-vote window for label stability
@@ -716,7 +730,7 @@ const ASTRA_HAR = (() => {
         : 'Insufficient pose information';
       return { activity: 'UNCERTAIN', confidence: Math.round(topScore), reason };
     }
-    return { activity: topCode, confidence: Math.round(topScore), reason: null };
+    return { activity: topCode, confidence: Math.round(topScore), reason: ACTIVITY_DESCRIPTIONS[topCode] || null };
   }
 
   /* ------------------------------- public API ------------------------------- */
@@ -747,7 +761,8 @@ const ASTRA_HAR = (() => {
       frameType: 'BODY-CENTRIC (3D)',
     } : null;
 
-    return history.commit(finalActivity, finalConfidence, raw.activity === 'UNCERTAIN' ? raw.reason : null, bodyTelemetry);
+    const reason = raw.activity === 'UNCERTAIN' ? raw.reason : (ACTIVITY_DESCRIPTIONS[finalActivity] || raw.reason);
+    return history.commit(finalActivity, finalConfidence, reason, bodyTelemetry);
   }
 
   /** No per-image history exists, so motion-only activities are never offered — see TEMPORAL_ONLY. */
@@ -769,7 +784,7 @@ const ASTRA_HAR = (() => {
     return {
       activity: result.activity,
       confidence: result.confidence,
-      reason: result.reason,
+      reason: result.activity === 'UNCERTAIN' ? result.reason : (ACTIVITY_DESCRIPTIONS[result.activity] || null),
       previous: null,
       transition: null,
       sinceMs: Date.now(),
@@ -781,7 +796,7 @@ const ASTRA_HAR = (() => {
   function resetAll() { people.clear(); }
 
   return {
-    ACTIVITY_CODES, TEMPORAL_ONLY,
+    ACTIVITY_CODES, ACTIVITY_DESCRIPTIONS, TEMPORAL_ONLY,
     classifyVideoFrame, classifyStaticImage,
     resetPerson, resetAll,
   };

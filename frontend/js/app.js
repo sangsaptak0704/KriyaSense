@@ -115,6 +115,7 @@
   /* ------------------------------- PERSON LIST / ACTIVITY HERO ------------------------------- */
 
   function personCardHtml(record) {
+    const isWarn = record.activity === 'UNCERTAIN';
     return `
       <div class="person-card">
         <div class="person-card-head">
@@ -123,7 +124,7 @@
         </div>
         <div class="person-card-activity">${record.label.toUpperCase()}</div>
         <div class="meter"><div class="meter-fill" style="width:${record.confidence}%"></div></div>
-        ${record.reason ? `<div class="person-card-reason">${record.reason}</div>` : ''}
+        ${record.reason ? `<div class="person-card-reason ${isWarn ? 'reason-warn' : ''}">${record.reason}</div>` : ''}
       </div>`;
   }
 
@@ -143,10 +144,12 @@
         <div class="activity-hero-name" style="font-size:20px;color:var(--text-2)">NO PERSON DETECTED</div>
         <div class="activity-hero-conf">Upload an image/video or start Live Camera to begin analysis.</div>`;
     }
+    const isWarn = record.activity === 'UNCERTAIN';
     return `
       <div class="activity-hero-name">${record.label.toUpperCase()}</div>
       <div class="activity-hero-conf">Confidence <span>${record.confidence.toFixed(1)}%</span></div>
       <div class="meter"><div class="meter-fill" style="width:${record.confidence}%"></div></div>
+      ${record.reason ? `<div style="font-size:11px;color:${isWarn ? 'var(--status-caution)' : 'var(--text-secondary)'};margin-top:7px;font-family:var(--mono);letter-spacing:.2px;font-style:${isWarn ? 'italic' : 'normal'};">${record.reason}</div>` : ''}
       <div class="activity-hero-meta">
         <div><span class="lbl">Person</span><span class="val">${ASTRA_ACTIVITY.formatPersonId(record.id)}</span></div>
         <div><span class="lbl">Duration</span><span class="val">${formatDuration(record.durationMs)}</span></div>
